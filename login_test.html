@@ -1,0 +1,308 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Airflow 登录测试</title>
+    <style>
+      body {
+        font-family: Arial, sans-serif;
+        max-width: 800px;
+        margin: 50px auto;
+        padding: 20px;
+        background-color: #f5f5f5;
+      }
+      .container {
+        background: white;
+        padding: 30px;
+        border-radius: 8px;
+        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+      }
+      h1 {
+        color: #333;
+        border-bottom: 2px solid #007bff;
+        padding-bottom: 10px;
+      }
+      .test-section {
+        margin: 20px 0;
+        padding: 15px;
+        background: #f8f9fa;
+        border-left: 4px solid #007bff;
+      }
+      button {
+        background: #007bff;
+        color: white;
+        border: none;
+        padding: 10px 20px;
+        border-radius: 4px;
+        cursor: pointer;
+        margin: 5px;
+      }
+      button:hover {
+        background: #0056b3;
+      }
+      .result {
+        margin-top: 10px;
+        padding: 10px;
+        border-radius: 4px;
+      }
+      .success {
+        background: #d4edda;
+        color: #155724;
+        border: 1px solid #c3e6cb;
+      }
+      .error {
+        background: #f8d7da;
+        color: #721c24;
+        border: 1px solid #f5c6cb;
+      }
+      .info {
+        background: #d1ecf1;
+        color: #0c5460;
+        border: 1px solid #bee5eb;
+      }
+      code {
+        background: #e9ecef;
+        padding: 2px 6px;
+        border-radius: 3px;
+        font-family: "Courier New", monospace;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <h1>🔧 Airflow 3.1.3 登录诊断工具</h1>
+
+      <div class="test-section">
+        <h3>📋 当前登录凭据</h3>
+        <p><strong>用户名:</strong> <code>admin</code></p>
+        <p>
+          <strong>密码:</strong>
+          <code id="currentPassword">SNZ5mDTmNdBDT2bS</code>
+        </p>
+        <p>
+          <strong>登录地址:</strong>
+          <code
+            ><a href="http://localhost:8080" target="_blank"
+              >http://localhost:8080</a
+            ></code
+          >
+        </p>
+      </div>
+
+      <div class="test-section">
+        <h3>🧪 测试 1: API Token 认证</h3>
+        <button onclick="testAPILogin()">测试 API 登录</button>
+        <div id="apiResult" class="result" style="display: none"></div>
+      </div>
+
+      <div class="test-section">
+        <h3>🧪 测试 2: 表单登录</h3>
+        <input
+          type="text"
+          id="username"
+          placeholder="用户名"
+          value="admin"
+          style="margin: 5px; padding: 8px"
+        />
+        <input
+          type="password"
+          id="password"
+          placeholder="密码"
+          value="SNZ5mDTmNdBDT2bS"
+          style="margin: 5px; padding: 8px"
+        />
+        <button onclick="testFormLogin()">测试表单登录</button>
+        <div id="formResult" class="result" style="display: none"></div>
+      </div>
+
+      <div class="test-section">
+        <h3>💡 浏览器问题排查步骤</h3>
+        <ol>
+          <li>
+            <strong>清除缓存和 Cookie:</strong>
+            <ul>
+              <li>按 F12 打开开发者工具</li>
+              <li>Application (应用程序) → Storage → Clear site data</li>
+              <li>或者使用隐私/无痕模式</li>
+            </ul>
+          </li>
+          <li>
+            <strong>硬刷新页面:</strong>
+            <ul>
+              <li>
+                Windows: <code>Ctrl + F5</code> 或 <code>Ctrl + Shift + R</code>
+              </li>
+              <li>Mac: <code>Cmd + Shift + R</code></li>
+            </ul>
+          </li>
+          <li>
+            <strong>检查浏览器控制台:</strong>
+            <ul>
+              <li>按 F12 打开开发者工具</li>
+              <li>查看 Console 标签的错误信息</li>
+              <li>查看 Network 标签的请求状态</li>
+            </ul>
+          </li>
+          <li>
+            <strong>尝试其他浏览器:</strong>
+            <ul>
+              <li>Chrome、Edge、Firefox 等</li>
+            </ul>
+          </li>
+        </ol>
+      </div>
+
+      <div class="test-section">
+        <h3>🔍 快速诊断</h3>
+        <button onclick="clearLocalData()">清除本地存储</button>
+        <button onclick="window.location.reload(true)">硬刷新页面</button>
+        <button onclick="window.open('http://localhost:8080', '_blank')">
+          打开 Airflow (新标签)
+        </button>
+        <div id="diagResult" class="result info" style="display: block">
+          <strong>提示:</strong> 点击"清除本地存储"后再点击"打开
+          Airflow"尝试登录
+        </div>
+      </div>
+    </div>
+
+    <script>
+      async function testAPILogin() {
+        const resultDiv = document.getElementById("apiResult");
+        resultDiv.style.display = "block";
+        resultDiv.className = "result info";
+        resultDiv.innerHTML = "正在测试...";
+
+        try {
+          const response = await fetch("http://localhost:8080/auth/token", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              username: "admin",
+              password: document.getElementById("currentPassword").textContent,
+            }),
+          });
+
+          if (response.ok) {
+            const data = await response.json();
+            resultDiv.className = "result success";
+            resultDiv.innerHTML = `
+                        <strong>✅ API 登录成功！</strong><br>
+                        Token (前50字符): <code>${data.access_token.substring(
+                          0,
+                          50
+                        )}...</code><br>
+                        <br><strong>结论:</strong> API 认证正常，问题可能在浏览器端会话管理。
+                    `;
+          } else {
+            resultDiv.className = "result error";
+            resultDiv.innerHTML = `
+                        <strong>❌ API 登录失败</strong><br>
+                        状态码: ${response.status}<br>
+                        错误: ${response.statusText}
+                    `;
+          }
+        } catch (error) {
+          resultDiv.className = "result error";
+          resultDiv.innerHTML = `
+                    <strong>❌ 请求失败</strong><br>
+                    错误: ${error.message}<br>
+                    <br><strong>可能原因:</strong> 容器未启动或端口未映射
+                `;
+        }
+      }
+
+      async function testFormLogin() {
+        const resultDiv = document.getElementById("formResult");
+        const username = document.getElementById("username").value;
+        const password = document.getElementById("password").value;
+
+        resultDiv.style.display = "block";
+        resultDiv.className = "result info";
+        resultDiv.innerHTML = "正在测试...";
+
+        try {
+          const response = await fetch("http://localhost:8080/auth/token", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              username: username,
+              password: password,
+            }),
+          });
+
+          if (response.ok) {
+            const data = await response.json();
+            // 尝试使用 token 访问受保护资源
+            const testResponse = await fetch(
+              "http://localhost:8080/ui/config",
+              {
+                headers: {
+                  Authorization: `Bearer ${data.access_token}`,
+                },
+              }
+            );
+
+            if (testResponse.ok) {
+              resultDiv.className = "result success";
+              resultDiv.innerHTML = `
+                            <strong>✅ 完整登录流程测试成功！</strong><br>
+                            1. Token 获取成功<br>
+                            2. Token 验证成功<br>
+                            3. API 访问正常<br>
+                            <br><strong>建议:</strong> 清除浏览器缓存后访问 <a href="http://localhost:8080" target="_blank">Airflow UI</a>
+                        `;
+            } else {
+              resultDiv.className = "result error";
+              resultDiv.innerHTML = `
+                            <strong>⚠️ Token 获取成功但验证失败</strong><br>
+                            这可能是浏览器会话问题
+                        `;
+            }
+          } else {
+            resultDiv.className = "result error";
+            resultDiv.innerHTML = `
+                        <strong>❌ 登录失败</strong><br>
+                        状态码: ${response.status}<br>
+                        请检查用户名和密码是否正确
+                    `;
+          }
+        } catch (error) {
+          resultDiv.className = "result error";
+          resultDiv.innerHTML = `<strong>❌ 请求失败:</strong> ${error.message}`;
+        }
+      }
+
+      function clearLocalData() {
+        // 清除 localStorage
+        localStorage.clear();
+        // 清除 sessionStorage
+        sessionStorage.clear();
+        // 尝试清除 cookies (仅限同源)
+        document.cookie.split(";").forEach(function (c) {
+          document.cookie = c
+            .replace(/^ +/, "")
+            .replace(
+              /=.*/,
+              "=;expires=" + new Date().toUTCString() + ";path=/"
+            );
+        });
+
+        const diagResult = document.getElementById("diagResult");
+        diagResult.className = "result success";
+        diagResult.innerHTML = "✅ 本地存储已清除！现在可以尝试登录 Airflow。";
+
+        setTimeout(() => {
+          diagResult.className = "result info";
+          diagResult.innerHTML =
+            '<strong>提示:</strong> 本地存储已清除，点击"打开 Airflow"尝试登录';
+        }, 3000);
+      }
+    </script>
+  </body>
+</html>

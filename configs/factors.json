@@ -1,0 +1,32 @@
+[
+  {
+    "code": "alpha_mom_5",
+    "name": "5日动量",
+    "expression": "Ref($close, 5) / $close - 1",
+    "category": "momentum"
+  },
+  {
+    "code": "alpha_mom_20",
+    "name": "20日动量",
+    "expression": "Ref($close, 20) / $close - 1",
+    "category": "momentum"
+  },
+  {
+    "code": "alpha_vol_10",
+    "name": "10日波动率",
+    "expression": "Std($close, 10) / Mean($close, 10)",
+    "category": "volatility"
+  },
+  {
+    "code": "alpha_meanrev_15",
+    "name": "15日均值回归",
+    "expression": "($close - Mean($close, 15)) / Std($close, 15)",
+    "category": "mean_reversion"
+  },
+  {
+    "code": "alpha_beta_30",
+    "name": "30日Beta",
+    "expression": "Cov($close, Mean($close, 5), 30) / Var(Mean($close, 5), 30)",
+    "category": "beta"
+  }
+]
