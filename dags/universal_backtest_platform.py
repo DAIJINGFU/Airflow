@@ -25,6 +25,17 @@ sys.path.insert(0, str(Path(__file__).parent))
 from jq_adapter import JQStrategyAdapter, reset_global_context
 from jq_strategy_loader import validate_strategy_code, load_strategy_functions
 
+# ============================================================================
+# 常量定义
+# ============================================================================
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+STRATEGIES_BASE_DIR = Path('/opt/airflow/strategies')
+if not STRATEGIES_BASE_DIR.exists():
+    fallback_dir = PROJECT_ROOT / 'strategies'
+    if fallback_dir.exists():
+        STRATEGIES_BASE_DIR = fallback_dir
+
 
 # =============================================================================
 # 复用现有组件
@@ -259,6 +270,27 @@ def _normalize_strategy_code(code: str) -> str:
     return cleaned
 
 
+def _load_strategy_code_from_file(strategy_file: str) -> str:
+    """根据文件名读取策略代码"""
+    file_path = Path(strategy_file.strip())
+    candidate_paths = []
+
+    if file_path.is_absolute():
+        candidate_paths.append(file_path)
+    else:
+        candidate_paths.append(STRATEGIES_BASE_DIR / file_path)
+        candidate_paths.append(PROJECT_ROOT / file_path)
+
+    for candidate in candidate_paths:
+        if candidate.exists():
+            if candidate.is_dir():
+                raise IsADirectoryError(f"策略文件路径指向目录: {candidate}")
+            return candidate.read_text(encoding='utf-8')
+
+    tried_paths = ", ".join(str(p) for p in candidate_paths)
+    raise FileNotFoundError(f"策略文件不存在（已尝试: {tried_paths}）")
+
+
 # =============================================================================
 # Airflow 任务
 # =============================================================================
@@ -278,7 +310,18 @@ def validate_and_prepare(**context) -> Dict[str, Any]:
     print(f"[DEBUG] dag_params keys: {list(dag_params.keys())}")
     
     # 提取参数
+    strategy_file = (dag_params.get('strategy_file') or '').strip()
     raw_strategy_code = dag_params.get('strategy_code', '')
+
+    if strategy_file:
+        print(f"[INFO] 从策略文件加载代码: {strategy_file}")
+        try:
+            raw_strategy_code = _load_strategy_code_from_file(strategy_file)
+        except (FileNotFoundError, IsADirectoryError) as file_error:
+            raise AirflowFailException(f"策略文件读取失败: {file_error}")
+        except Exception as file_error:
+            raise AirflowFailException(f"策略文件解析异常: {file_error}")
+
     strategy_code = _normalize_strategy_code(raw_strategy_code)
     strategy_name = (dag_params.get('strategy_name') or '').strip()
     start_date = dag_params.get('start_date', '')
@@ -663,6 +706,12 @@ def generate_report(results: Dict[str, Any]):
             type="string",
             title="策略名称",
             description="策略名称（留空自动生成）",
+        ),
+        "strategy_file": Param(
+            default="",
+            type="string",
+            title="策略文件（可选）",
+            description="可选: 相对于 /opt/airflow/strategies 的文件路径，如 MA5.py 或 strategies/MA5.py",
         ),
         "strategy_code": Param(
             default="""from jqdata import *
