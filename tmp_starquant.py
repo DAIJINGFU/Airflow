@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import json
 import os
@@ -11,11 +11,10 @@ import pandas as pd
 from airflow.decorators import dag, task
 from airflow.exceptions import AirflowFailException
 
-from factor_platform.factor_store import DEFAULT_DB_PATH, DEFAULT_FACTOR_CATALOG, FactorStore
-
 WORKSPACE_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_STORAGE_ROOT = WORKSPACE_ROOT / ".airflow_factor_pipeline"
 DEFAULT_STORAGE_ROOT.mkdir(parents=True, exist_ok=True)
+DEFAULT_FACTOR_FILE = WORKSPACE_ROOT / "configs" / "factors.json"
 QLIB_DEFAULT_ROOT = WORKSPACE_ROOT / "stockdata" / "qlib_data" / "cn_data"
 
 DEFAULT_FACTORS: List[Dict[str, Any]] = [
@@ -109,125 +108,172 @@ def _calc_drawdown(returns: pd.Series) -> float:
 def bootstrap_environment() -> Dict[str, Any]:
     storage_dir = Path(os.environ.get("FACTOR_PIPELINE_STORAGE", DEFAULT_STORAGE_ROOT))
     storage_dir.mkdir(parents=True, exist_ok=True)
-    qlib_path = Path(os.environ.get("QLIB_DATA_PATH", QLIB_DEFAULT_ROOT))
-    if not qlib_path.exists():
-        raise AirflowFailException(
-            f"未找到 qlib 数据目录：{qlib_path}。请确认 D:/JoinQuant/VScode/airflow/stockdata/qlib_data/cn_data 已同步，或设置 QLIB_DATA_PATH。"
-        )
+    # Prefer a generic data root for price files (CSV or other). Keep QLIB_DATA_PATH optional for backward compatibility.
+    data_root = Path(os.environ.get("FACTOR_DATA_ROOT", WORKSPACE_ROOT / "stockdata"))
+    # Ensure data root exists (create directory if missing) but do not fail if it's empty.
+    data_root.mkdir(parents=True, exist_ok=True)
+    # Keep an optional QLib path in env for compatibility with older setups, but do not require it.
+    qlib_path = Path(os.environ.get("QLIB_DATA_PATH", ""))
     start = _parse_date(os.environ.get("FACTOR_START_DATE", "2018-01-01"), "2018-01-01")
     end = _parse_date(os.environ.get("FACTOR_END_DATE", "2024-12-31"), "2024-12-31")
     freq = os.environ.get("FACTOR_FREQ", "day").strip().lower() or "day"
     instruments = os.environ.get("FACTOR_INSTRUMENTS", "csi300").split(",")
-    registry_db = Path(os.environ.get("FACTOR_PLATFORM_DB", DEFAULT_DB_PATH))
-    registry_db.parent.mkdir(parents=True, exist_ok=True)
     return {
         "storage_dir": str(storage_dir),
+        "data_root": str(data_root),
         "qlib_path": str(qlib_path),
         "start": start,
         "end": end,
         "freq": freq,
         "instruments": [item.strip() for item in instruments if item.strip()],
-        "factor_catalog": str(DEFAULT_FACTOR_CATALOG),
-        "registry_db": str(registry_db),
+        "factor_catalog": str(DEFAULT_FACTOR_FILE),
     }
 
 
 @task
-def ensure_registry(env: Dict[str, Any]) -> Dict[str, Any]:
+def load_factor_catalog(env: Dict[str, Any]) -> str:
     catalog_path = Path(os.environ.get("FACTOR_CATALOG_PATH", env["factor_catalog"]))
     _ = _load_factor_catalog(catalog_path)
-    store = FactorStore(Path(env["registry_db"]))
-    store.ensure_seed_factors(catalog_path)
-    return env
+    return str(catalog_path)
 
 
 @task
-def fetch_factor_jobs(env: Dict[str, Any]) -> List[Dict[str, Any]]:
-    store = FactorStore(Path(env["registry_db"]))
+def prepare_factor_queue(catalog_path: str) -> List[Dict[str, Any]]:
+    factors = json.loads(Path(catalog_path).read_text(encoding="utf-8"))
     batch = max(int(os.environ.get("FACTOR_BATCH_SIZE", "8")), 1)
-    jobs = store.dequeue_jobs(limit=batch)
+    jobs: List[Dict[str, Any]] = []
+    for spec in factors[:batch]:
+        expression = spec.get("expression")
+        if not expression:
+            continue
+        jobs.append(
+            {
+                "code": spec.get("code"),
+                "name": spec.get("name", spec.get("code")),
+                "expression": expression,
+                "category": spec.get("category"),
+                "instruments": spec.get("instruments"),
+            }
+        )
     if not jobs:
-        raise AirflowFailException("没有待运行的因子任务，请通过 factor_platform CLI 或 API 提交。")
+        raise AirflowFailException("因子目录中没有可执行的表达式。")
     return jobs
 
 
 @task
 def evaluate_factor(job: Dict[str, Any], env: Dict[str, Any]) -> Dict[str, Any]:
-    store = FactorStore(Path(env["registry_db"]))
-    job_id = job.get("job_id")
-    factor_code = job.get("factor_code") or job.get("code")
-    factor_name = job.get("name") or factor_code
+    # Try to compute factor using local CSV-based data adapter first (preferred).
+    start = env["start"]
+    end = env["end"]
+    freq = env["freq"]
 
-    def fail_result(message: str) -> Dict[str, Any]:
-        if job_id:
-            store.mark_job_failed(job_id, message)
-        return {
-            "job_id": job_id,
-            "code": factor_code,
-            "name": factor_name,
-            "status": "FAILED",
-            "error": message,
-            "expression": job.get("expression"),
-        }
-
-    # Use local CSV stockdata via data_adapter (no qlib)
-    from factor_platform.data_adapter import (
-        load_pricing_from_stockdata,
-        compute_factor_from_expression,
-        factor_df_to_series,
-    )
-
-    start = job.get("start_date") or env["start"]
-    end = job.get("end_date") or env["end"]
-    freq = (job.get("freq") or env["freq"]).lower()
-
-    # load pricing from local stockdata (1d_1w_1m)
-    stockdata_dir = Path(__file__).resolve().parent.parent / "stockdata" / "1d_1w_1m"
     try:
-        pricing = load_pricing_from_stockdata(str(stockdata_dir))
-    except Exception as exc:
-        return fail_result(f"加载本地 stockdata 失败: {exc}")
+        from factor_platform.data_adapter import load_pricing_from_stockdata, compute_factor_from_expression
 
-    # resolve instruments: use provided instruments or all available columns
-    raw_instruments = job.get("instruments") or env.get("instruments") or []
-    if isinstance(raw_instruments, str):
-        tokens = [t.strip() for t in raw_instruments.split(',') if t.strip()]
-    else:
-        tokens = [t for t in raw_instruments if t]
-    if tokens:
-        # normalize to 6-digit codes if provided as numeric
-        tokens_norm = [str(t).split('.')[0].zfill(6) for t in tokens]
-        instruments = [c for c in tokens_norm if c in pricing.columns]
-        if not instruments:
-            # fallback: try matching codes without leading zeros
-            instruments = [c for c in tokens_norm if c.lstrip('0') in pricing.columns]
-    else:
-        instruments = list(pricing.columns)
+        pricing = load_pricing_from_stockdata(env.get("data_root", "stockdata"))
 
-    if not instruments:
-        return fail_result("未解析到有效的股票代码，请检查 job.instruments 与 stockdata 文件")
+        # compute factor matrix (dates x codes)
+        factor_matrix = compute_factor_from_expression(pricing, job["expression"])
 
-    # compute factor DataFrame from expression using pricing
-    try:
-        factor_matrix = compute_factor_from_expression(pricing[instruments], job.get("expression", ""))
-    except Exception as exc:
-        return fail_result(f"因子表达式计算失败: {exc}")
+        # compute 1-day forward return label: price.shift(-1)/price - 1
+        label_matrix = pricing.shift(-1) / pricing - 1
 
-    # compute 1-day forward label (can be extended via job context)
-    try:
-        forward = pricing[instruments].shift(-1) / pricing[instruments] - 1
-    except Exception as exc:
-        return fail_result(f"计算前瞻收益失败: {exc}")
+        def matrix_to_multiindex_df(mat, colname: str):
+            s = mat.stack(dropna=False)
+            # stack yields (date, code) -> swap to (code, date) to match expected (instrument, datetime)
+            s = s.swaplevel(0, 1)
+            s.index.names = ["instrument", "datetime"]
+            return s.to_frame(colname)
 
-    # create long format DataFrames
-    factor_df = factor_matrix.stack().reset_index()
-    factor_df.columns = ['datetime', 'instrument', 'factor']
-    label_df = forward.stack().reset_index()
-    label_df.columns = ['datetime', 'instrument', 'label']
+        factor_df = matrix_to_multiindex_df(factor_matrix, "factor")
+        label_df = matrix_to_multiindex_df(label_matrix, "label")
+    except Exception as csv_exc:
+        # If CSV approach fails, fall back to QLib if a qlib path is configured.
+        qlib_path = env.get("qlib_path")
+        if not qlib_path:
+            return {
+                "code": job.get("code"),
+                "name": job.get("name"),
+                "status": "FAILED",
+                "error": (
+                    "无法使用本地 CSV 数据计算因子，且未配置 QLib 数据路径。"
+                    f" CSV 错误: {csv_exc}。如需使用 QLib，请设置环境变量 QLIB_DATA_PATH 并安装 pyqlib。"
+                ),
+            }
 
-    merged = pd.merge(factor_df, label_df, on=['datetime', 'instrument'], how='inner').dropna()
+        try:
+            import qlib
+            from qlib.data import D
+        except ModuleNotFoundError as exc:
+            return {
+                "code": job.get("code"),
+                "name": job.get("name"),
+                "status": "FAILED",
+                "error": f"未安装 qlib，请运行 pip install pyqlib: {exc}",
+            }
+
+        # initialize qlib using configured path
+        try:
+            qlib.init(provider_uri=env.get("qlib_path", ""), region="cn")
+        except Exception:
+            # ignore init errors and try to proceed; D.features may still fail which will be caught below
+            pass
+
+        # resolve instruments similar to older logic
+        raw_instruments = job.get("instruments") or env.get("instruments")
+        if isinstance(raw_instruments, str):
+            raw_tokens = [raw_instruments]
+        else:
+            raw_tokens = list(raw_instruments)
+        tokens: List[str] = []
+        for item in raw_tokens:
+            for part in str(item).split(","):
+                part = part.strip()
+                if part:
+                    tokens.append(part)
+        if not tokens:
+            tokens = ["csi300"]
+
+        resolved: List[str] = []
+        for token in tokens:
+            key = token.lower()
+            try:
+                if key.startswith("csi"):
+                    pool_cfg = D.instruments(token)
+                    resolved.extend(D.list_instruments(pool_cfg, as_list=True))
+                else:
+                    resolved.append(token)
+            except Exception:
+                resolved.append(token)
+        instruments = list(dict.fromkeys(resolved)) or D.instruments("csi300")
+
+        try:
+            factor_df = D.features(instruments, [job["expression"]], start_time=start, end_time=end, freq=freq)
+            factor_df.columns = ["factor"]
+            label_df = D.features(
+                instruments,
+                ["Ref($close, -1)/$close - 1"],
+                start_time=start,
+                end_time=end,
+                freq=freq,
+            )
+            label_df.columns = ["label"]
+        except Exception as exc:
+            return {
+                "code": job.get("code"),
+                "name": job.get("name"),
+                "status": "FAILED",
+                "error": f"拉取qlib数据失败: {exc}",
+            }
+
+    merged = pd.concat([factor_df, label_df], axis=1).dropna()
     if merged.empty:
-        return fail_result("提取出的因子或标签为空")
+        return {
+            "code": job["code"],
+            "name": job.get("name"),
+            "status": "FAILED",
+            "error": "提取出的因子或标签为空",
+        }
     if isinstance(merged.index, pd.MultiIndex):
         inst_name, dt_name = merged.index.names
         merged = merged.reset_index()
@@ -256,20 +302,11 @@ def evaluate_factor(job: Dict[str, Any], env: Dict[str, Any]) -> Dict[str, Any]:
         "sharpe_ratio": sharpe,
         "max_drawdown": max_dd,
     }
-    store.mark_job_succeeded(job_id, metrics)
-    
-    # Convert nan values to None for XCom serialization compatibility in Airflow 3.x
-    serializable_metrics = {
-        k: (None if isinstance(v, (float, np.floating)) and np.isnan(v) else float(v) if isinstance(v, (np.floating, np.integer)) else v)
-        for k, v in metrics.items()
-    }
-    
     return {
-        "job_id": job_id,
-        "code": factor_code,
-        "name": factor_name,
+        "code": job["code"],
+        "name": job.get("name"),
         "status": "SUCCESS",
-        "metrics": serializable_metrics,
+        "metrics": metrics,
         "expression": job["expression"],
     }
 
@@ -298,10 +335,8 @@ def aggregate_results(evaluations: List[Dict[str, Any]], env: Dict[str, Any]) ->
         )
     df = pd.DataFrame(rows)
     df.sort_values(by=["ICIR", "IC"], ascending=False, inplace=True)
-    summary_path = Path(env["storage_dir"]) / f"qlib_factor_summary_{_timestamp()}.csv"
+    summary_path = Path(env["storage_dir"]) / f"factor_summary_{_timestamp()}.csv"
     df.to_csv(summary_path, index=False)
-    store = FactorStore(Path(env["registry_db"]))
-    store.attach_result_path([item["job_id"] for item in successes if item.get("job_id")], str(summary_path))
     return str(summary_path)
 
 
@@ -313,14 +348,14 @@ def publish_summary(summary_path: str) -> None:
     df = pd.read_csv(path)
     top_rows = df.head(10)
     print("=" * 80)
-    print("QLib 因子分析报告（Top 10 by ICIR）")
+    print("因子分析报告（Top 10 by ICIR）")
     print("=" * 80)
     print(top_rows.to_string(index=False))
     print("=" * 80)
 
 
 default_args = {
-    "owner": "qlib_factor_pipeline",
+    "owner": "starquant_factor_pipeline",
     "retries": 0,
     "execution_timeout": timedelta(minutes=30),
 }
@@ -333,15 +368,15 @@ default_args = {
     catchup=False,
     is_paused_upon_creation=False,
     default_args=default_args,
-    tags=["factor", "qlib", "analysis"],
-    description="基于本地 qlib 数据的因子分析 DAG",
+    tags=["factor", "analysis"],
+    description="本地因子分析 DAG（支持 CSV / 本地数据源）",
 )
 def starquant_factor_pipeline() -> None:
     env = bootstrap_environment()
-    ready_env = ensure_registry(env)
-    jobs = fetch_factor_jobs(ready_env)
-    evaluations = evaluate_factor.partial(env=ready_env).expand(job=jobs)
-    summary = aggregate_results(evaluations, ready_env)
+    catalog_path = load_factor_catalog(env)
+    jobs = prepare_factor_queue(catalog_path)
+    evaluations = evaluate_factor.partial(env=env).expand(job=jobs)
+    summary = aggregate_results(evaluations, env)
     publish_summary(summary)
 
 

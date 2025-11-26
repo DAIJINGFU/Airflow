@@ -766,8 +766,6 @@ def universal_backtest_platform_dag():
 
 将当前固定策略的 `jq_backtrader_precision` DAG 优化为**通用策略回测平台**，支持用户通过 Web UI 提交任意 JoinQuant 格式的策略代码进行回测。
 
-> ⚠️ **注意**：继续迭代和优化通用回测平台（`dags/universal_backtest_platform.py` 等）时，务必与因子分析系统（`factor_platform/` 及对应 DAG）解耦，禁止在此阶段动到因子分析管线，防止两套系统互相影响。
-
 #### 核心需求
 
 1. **动态策略接入**: 支持用户上传或粘贴 JoinQuant 格式策略代码

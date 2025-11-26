@@ -8,7 +8,8 @@
 - **容器路径**: `/opt/airflow/stockdata`
 - **数据类型**:
   - CSV 格式日线数据: `stockdata/1d_1w_1m/`
-  - QLib 二进制数据: `qlib_data/cn_data/`
+  - CSV 格式日线数据: `stockdata/1d_1w_1m/`
+  - 可选：QLib 二进制数据: `qlib_data/cn_data/`
 
 ### 2. 配置文件创建
 
@@ -20,7 +21,7 @@
 ### 3. DAG 文件分析
 
 - ✅ `jq_backtrader_precision.py` - Backtrader 回测系统
-- ✅ `starquant_factor_pipeline.py` - QLib 因子分析管道
+- ✅ `starquant_factor_pipeline.py` - 因子分析管道（支持本地 CSV / 可选 QLib）
 
 ### 4. 文档更新
 
@@ -31,17 +32,17 @@
 
 ## 📊 DAG 功能对比
 
-| 特性         | jq_backtrader_precision                                                 | starquant_factor_pipeline                  |
-| ------------ | ----------------------------------------------------------------------- | ------------------------------------------ |
-| **主要功能** | 策略回测                                                                | 因子分析                                   |
-| **框架**     | Backtrader                                                              | QLib                                       |
-| **数据源**   | CSV (前复权日线)                                                        | QLib 二进制                                |
-| **数据路径** | `/opt/airflow/stockdata/stockdata/1d_1w_1m/000001/000001_daily_qfq.csv` | `/opt/airflow/stockdata/qlib_data/cn_data` |
-| **核心依赖** | backtrader, pandas, loguru                                              | pyqlib, numpy, pandas                      |
-| **A 股规则** | ✅ 佣金/印花税/手数限制                                                 | ❌ 纯因子分析                              |
-| **输出指标** | 夏普比率、最大回撤、总收益                                              | IC、ICIR、Rank IC、年化收益                |
-| **策略支持** | 双均线、动量等                                                          | N/A                                        |
-| **并行计算** | ✅ 多策略并行                                                           | ✅ 多因子并行                              |
+| 特性         | jq_backtrader_precision                                                 | starquant_factor_pipeline                                     |
+| ------------ | ----------------------------------------------------------------------- | ------------------------------------------------------------- |
+| **主要功能** | 策略回测                                                                | 因子分析                                                      |
+| **框架**     | Backtrader                                                              | 本地 CSV (默认) / QLib (可选)                                 |
+| **数据源**   | CSV (前复权日线，默认)                                                  | CSV (默认) 或 可选 QLib 二进制                                |
+| **数据路径** | `/opt/airflow/stockdata/stockdata/1d_1w_1m/000001/000001_daily_qfq.csv` | `/opt/airflow/stockdata/qlib_data/cn_data` (仅在使用 QLib 时) |
+| **核心依赖** | backtrader, pandas, loguru                                              | numpy, pandas (pyqlib 可选，若使用 QLib 则需安装)             |
+| **A 股规则** | ✅ 佣金/印花税/手数限制                                                 | ❌ 纯因子分析                                                 |
+| **输出指标** | 夏普比率、最大回撤、总收益                                              | IC、ICIR、Rank IC、年化收益                                   |
+| **策略支持** | 双均线、动量等                                                          | N/A                                                           |
+| **并行计算** | ✅ 多策略并行                                                           | ✅ 多因子并行                                                 |
 
 ---
 
@@ -83,8 +84,10 @@ docker logs airflow_new-airflow-standalone-1 2>&1 | Select-String "Password for 
 # 进入容器
 docker exec -it airflow_new-airflow-standalone-1 bash
 
-# 在容器内执行
-python -m pip install --user backtrader pyqlib pandas numpy loguru
+# 在容器内执行（pyqlib 为可选，仅在你使用 QLib 时安装）
+python -m pip install --user backtrader pandas numpy loguru
+# 若需要使用 QLib，请另外安装：
+python -m pip install --user pyqlib
 
 # 或使用 requirements.txt
 python -m pip install --user -r /opt/airflow/requirements.txt
@@ -137,10 +140,15 @@ if ($errors.import_errors) {
 
 ```powershell
 docker exec airflow_new-airflow-standalone-1 python -c "import backtrader; print(f'backtrader {backtrader.__version__}')"
-docker exec airflow_new-airflow-standalone-1 python -c "import qlib; print(f'qlib {qlib.__version__}')"
 docker exec airflow_new-airflow-standalone-1 python -c "import pandas; print(f'pandas {pandas.__version__}')"
 docker exec airflow_new-airflow-standalone-1 python -c "import numpy; print(f'numpy {numpy.__version__}')"
 docker exec airflow_new-airflow-standalone-1 python -c "import loguru; print('loguru installed')"
+# 如果你使用 QLib，请单独检查：
+docker exec airflow_new-airflow-standalone-1 python -c "import importlib,sys
+try:
+  q=importlib.import_module('qlib'); print('qlib', q.__version__)
+except Exception as e:
+  print('qlib not installed or import failed:', e); sys.exit(0)"
 ```
 
 ---

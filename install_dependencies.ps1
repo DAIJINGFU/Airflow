@@ -41,7 +41,7 @@ if ($LASTEXITCODE -eq 0) {
 
 # 验证安装
 Write-Host "`n[4/4] 验证依赖安装..." -ForegroundColor Yellow
-$packages = @("backtrader", "qlib", "pandas", "numpy", "loguru")
+$packages = @("backtrader", "pandas", "numpy", "loguru")
 $allInstalled = $true
 
 foreach ($pkg in $packages) {

@@ -1,5 +1,6 @@
 backtrader>=1.9.76
-pyqlib>=0.9.0
 pandas>=2.0.0
 numpy>=1.24.0
 loguru>=0.7.0
+fastapi>=0.104.0
+uvicorn>=0.23.0

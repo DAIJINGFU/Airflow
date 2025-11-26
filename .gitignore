@@ -10,6 +10,11 @@ __pycache__/
 *.py[cod]
 *$py.class
 
+# 数据源 - 不推送到远程仓库
+stockdata/
+*.csv
+qlib_factor_summary_*.csv
+
 # Docker
 .env.local
 
